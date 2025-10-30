@@ -1,18 +1,24 @@
-*~
-_*
+# Compiled object files
 *.o
 *.d
 *.asm
 *.sym
-*.img
-vectors.S
-bootblock
-entryother
-initcode
-initcode.out
-kernelmemfs
+
+# Compiled executables
+kernel
+kernel.elf
+fs.img
 mkfs
-kernel/kernel
-user/usys.S
+qemu
+qemu-gdb
+*.img
+
+# Ignore user-level binaries (often prefixed with _)
+user/_*
+user/initcode
+
+# Misc
+*~
+*.bak
 .gdbinit
-TAGS
+grade-*.txt

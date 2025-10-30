@@ -659,6 +659,24 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
   }
 }
 
+struct proc*
+findproc(int pid)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock); // Lock the process
+    if(p->pid == pid && p->state != UNUSED) {
+      // Found it. Return with the lock HELD.
+      return p;
+    }
+    release(&p->lock); // Not this one. Release lock and keep looping.
+  }
+
+  // Did not find
+  return 0;
+}
+
 // Print a process listing to console.  For debugging.
 // Runs when user types ^P on console.
 // No lock to avoid wedging a stuck machine further.

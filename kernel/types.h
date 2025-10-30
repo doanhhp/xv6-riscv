@@ -8,3 +8,10 @@ typedef unsigned int  uint32;
 typedef unsigned long uint64;
 
 typedef uint64 pde_t;
+
+struct proc_info {
+  int pid;         // Process ID
+  int state;       // Process state
+  char name[16];   // Process name
+};
+

@@ -41,19 +41,19 @@ extern struct cpu cpus[NCPU];
 // return-to-user path via usertrapret() doesn't return through
 // the entire kernel call stack.
 struct trapframe {
-  /*   0 */ uint64 kernel_satp;   // kernel page table
-  /*   8 */ uint64 kernel_sp;     // top of process's kernel stack
-  /*  16 */ uint64 kernel_trap;   // usertrap()
-  /*  24 */ uint64 epc;           // saved user program counter
-  /*  32 */ uint64 kernel_hartid; // saved kernel tp
-  /*  40 */ uint64 ra;
-  /*  48 */ uint64 sp;
-  /*  56 */ uint64 gp;
-  /*  64 */ uint64 tp;
-  /*  72 */ uint64 t0;
-  /*  80 */ uint64 t1;
-  /*  88 */ uint64 t2;
-  /*  96 */ uint64 s0;
+  /* 0 */ uint64 kernel_satp;   // kernel page table
+  /* 8 */ uint64 kernel_sp;     // top of process's kernel stack
+  /* 16 */ uint64 kernel_trap;   // usertrap()
+  /* 24 */ uint64 epc;           // saved user program counter
+  /* 32 */ uint64 kernel_hartid; // saved kernel tp
+  /* 40 */ uint64 ra;
+  /* 48 */ uint64 sp;
+  /* 56 */ uint64 gp;
+  /* 64 */ uint64 tp;
+  /* 72 */ uint64 t0;
+  /* 80 */ uint64 t1;
+  /* 88 */ uint64 t2;
+  /* 96 */ uint64 s0;
   /* 104 */ uint64 s1;
   /* 112 */ uint64 a0;
   /* 120 */ uint64 a1;
@@ -105,3 +105,7 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+
+// Per-process information for the procinfo syscall
+extern struct proc proc[NPROC];
+struct proc* findproc(int pid);
