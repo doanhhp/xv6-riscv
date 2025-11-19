@@ -27,6 +27,7 @@ int uptime(void);
 int hello(void);
 int procinfo(struct proc_info*); 
 int checkpoint(int pid, char *filename);
+int restore(char *filename);
 // ulib.c
 int stat(const char*, struct stat*);
 char* strcpy(char*, const char*);

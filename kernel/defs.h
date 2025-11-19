@@ -36,6 +36,7 @@ int             filewrite(struct file*, uint64, int n);
 
 // fs.c
 void            fsinit(int);
+struct inode* create(char*, short, short, short);
 int             dirlink(struct inode*, char*, uint);
 struct inode*   dirlookup(struct inode*, char*, uint*);
 struct inode*   ialloc(uint, short);
@@ -103,6 +104,7 @@ int             either_copyin(void *dst, int user_src, uint64 src, uint64 len);
 void            procdump(void);
 uint64          sys_hello(void);
 uint64          sys_checkpoint(void);
+uint64          sys_restore(void);
 struct proc* findproc(int pid);
 // swtch.S
 void            swtch(struct context*, struct context*);

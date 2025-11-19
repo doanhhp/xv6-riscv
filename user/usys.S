@@ -120,3 +120,8 @@ checkpoint:
  li a7, SYS_checkpoint
  ecall
  ret
+.global restore
+restore:
+ li a7, SYS_restore
+ ecall
+ ret

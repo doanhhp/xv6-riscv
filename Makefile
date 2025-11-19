@@ -145,6 +145,7 @@ UPROGS=\
 	$U/_hello\
 	$U/_ps\
 	$U/_checkpointtest\
+	$U/_restoretest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

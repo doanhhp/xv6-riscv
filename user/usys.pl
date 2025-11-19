@@ -45,4 +45,4 @@ entry("uptime");
 entry("hello");
 entry("procinfo");
 entry("checkpoint");
-
+entry("restore");

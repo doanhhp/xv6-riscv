@@ -6,7 +6,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "vm.h"
-
+#include "stat.h"
 uint64
 sys_exit(void)
 {
@@ -114,6 +114,7 @@ sys_hello(void)
   printf("kernel: hello() called!\n");
   return 0;
 }
+// In kernel/sysproc.c
 
 uint64
 sys_checkpoint(void)
@@ -121,36 +122,96 @@ sys_checkpoint(void)
   int pid;
   char filename[128];
   struct proc *p;
+  struct inode *ip;
+  uint off = 0;
+  int ret = -1;
+  
+  uint64 sz;            // Local copy of p->sz
+  struct trapframe tf;  // Local copy of trapframe
+  
+  // Buffer for writing zeros (if a page is missing)
+  char *zeropage = kalloc(); 
+  if(zeropage == 0) {
+    printf("sys_checkpoint: ERROR kalloc failed\n");
+    return -1;
+  }
+  memset(zeropage, 0, PGSIZE);
 
-  // 1. Fetch the 1st argument (int PID)
-  //    No return value to check!
-  argint(0, &pid); 
-
-  // 2. Fetch the 2nd argument (string filename)
-  //    argstr DOES return int, so we check it.
+  // 1. Fetch arguments
+  argint(0, &pid);
   if(argstr(1, filename, 128) < 0) {
     printf("sys_checkpoint: ERROR failed to get filename\n");
+    kfree(zeropage);
     return -1;
   }
 
-  // Debug print to check
-  printf("sys_checkpoint: DEBUG: got pid=%d, filename=%s\n", pid, filename);
-
-  // 3. Find the target process
-  p = findproc(pid);
-
-  if(p == 0) { // Check if findproc returned null
+  // 2. Find target process
+  if((p = findproc(pid)) == 0) {
     printf("sys_checkpoint: ERROR: Process with PID %d not found.\n", pid);
+    kfree(zeropage);
     return -1;
   }
 
-  // Debug print on success
-  printf("sys_checkpoint: DEBUG: Found target process '%s' (PID %d)\n", p->name, p->pid);
+  // 3. Copy state safely
+  sz = p->sz;
+  memmove(&tf, p->trapframe, sizeof(tf));
+  
+  // Release lock before file I/O to avoid deadlock
+  release(&p->lock); 
 
-  // CRITICAL: Release the lock findproc gave us
-  release(&p->lock);
+  // 4. Create the file
+  begin_op();
+  if((ip = create(filename, T_FILE, 0, 0)) == 0){
+    printf("sys_checkpoint: ERROR: failed to create file %s\n", filename);
+    end_op();
+    kfree(zeropage);
+    return -1;
+  }
+  
+  // 5. Write Header (Size)
+  if(writei(ip, 0, (uint64)&sz, off, sizeof(sz)) != sizeof(sz)){
+    goto bad;
+  }
+  off += sizeof(sz);
 
-  return 0; // Return 0 for success
+  // 6. Write Trapframe
+  if(writei(ip, 0, (uint64)&tf, off, sizeof(tf)) != sizeof(tf)){
+    goto bad;
+  }
+  off += sizeof(tf);
+
+  // 7. Write Memory
+  for(uint64 i = 0; i < sz; i += PGSIZE){
+    uint64 pa = walkaddr(p->pagetable, i);
+    
+    int n = PGSIZE;
+    if(i + n > sz){
+      n = sz - i;
+    }
+
+    uint64 src_addr;
+    if(pa == 0){
+      src_addr = (uint64)zeropage;
+    } else {
+      src_addr = pa;
+    }
+
+    if(writei(ip, 0, src_addr, off, n) != n){
+      // FIXED LINE BELOW: changed %x to %lx
+      printf("sys_checkpoint: ERROR: write memory failed at addr 0x%lx\n", i);
+      goto bad;
+    }
+    off += n;
+  }
+
+  printf("sys_checkpoint: DEBUG: Wrote %d bytes (state + memory) to %s\n", off, filename);
+  ret = 0;
+
+bad:
+  iunlockput(ip);
+  end_op();
+  kfree(zeropage);
+  return ret;
 }
 // In kernel/sysproc.c
 
@@ -197,4 +258,25 @@ sys_procinfo(void)
   kfree((void *)kernel_buf);
 
   return num_procs;
+}
+
+
+// In kernel/sysproc.c
+
+uint64
+sys_restore(void)
+{
+  char filename[128];
+
+  // Fetch argument (filename)
+  if(argstr(0, filename, 128) < 0) {
+    printf("sys_restore: ERROR failed to get filename\n");
+    return -1;
+  }
+
+  printf("sys_restore: DEBUG: Called restore for file '%s'\n", filename);
+  
+  // Real logic will go here later...
+  
+  return 0;
 }

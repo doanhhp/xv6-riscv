@@ -23,3 +23,4 @@
 #define SYS_hello  22 
 #define SYS_procinfo  23 
 #define SYS_checkpoint 24
+#define SYS_restore    25

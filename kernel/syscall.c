@@ -132,6 +132,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_hello]   sys_hello,
 [SYS_procinfo] sys_procinfo,
 [SYS_checkpoint] sys_checkpoint,
+[SYS_restore]    sys_restore,
 };
 
 void
