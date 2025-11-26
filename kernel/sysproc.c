@@ -7,6 +7,11 @@
 #include "proc.h"
 #include "vm.h"
 #include "stat.h"
+#include "kernel/fs.h"
+#include "kernel/sleeplock.h"
+#include "kernel/file.h"
+#include "kernel/stat.h"
+#include "kernel/fcntl.h"
 uint64
 sys_exit(void)
 {
@@ -266,17 +271,34 @@ sys_procinfo(void)
 uint64
 sys_restore(void)
 {
-  char filename[128];
+  char path[128];
+  struct inode *ip;
 
-  // Fetch argument (filename)
-  if(argstr(0, filename, 128) < 0) {
-    printf("sys_restore: ERROR failed to get filename\n");
+  // 1. Fetch the filename argument
+  if(argstr(0, path, 128) < 0){
+    printf("sys_restore: ERROR failed to get path\n");
     return -1;
   }
 
-  printf("sys_restore: DEBUG: Called restore for file '%s'\n", filename);
-  
-  // Real logic will go here later...
-  
+  // 2. Start a file system transaction (required for namei/ilock)
+  begin_op();
+
+  // 3. Find the file (inode) by name
+  if((ip = namei(path)) == 0){
+    printf("sys_restore: ERROR file '%s' not found\n", path);
+    end_op();
+    return -1;
+  }
+
+  // 4. Lock the inode so we can read from it
+  ilock(ip);
+
+  // 5. TODO: Read and restore the process header
+  printf("sys_restore: DEBUG: Successfully opened '%s', size=%d bytes\n", path, ip->size);
+
+  // 6. Cleanup: Unlock and release the inode, then end transaction
+  iunlockput(ip);
+  end_op();
+
   return 0;
 }
