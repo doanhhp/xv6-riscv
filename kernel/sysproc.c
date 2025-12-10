@@ -10,7 +10,6 @@
 #include "kernel/fs.h"
 #include "kernel/sleeplock.h"
 #include "kernel/file.h"
-#include "kernel/stat.h"
 #include "kernel/fcntl.h"
 uint64
 sys_exit(void)
