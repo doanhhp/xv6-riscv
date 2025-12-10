@@ -270,34 +270,107 @@ sys_procinfo(void)
 uint64
 sys_restore(void)
 {
-  char path[128];
-  struct inode *ip;
+    char path[128];
+    struct inode *ip;
 
-  // 1. Fetch the filename argument
-  if(argstr(0, path, 128) < 0){
-    printf("sys_restore: ERROR failed to get path\n");
-    return -1;
+    // (1) Fetch filename – GIỮ NGUYÊN
+    if(argstr(0, path, sizeof(path)) < 0){
+        printf("sys_restore: ERROR failed to get path\n");
+        return -1;
+    }
+
+    // (2) Open file – GIỮ NGUYÊN
+    begin_op();
+    if((ip = namei(path)) == 0){
+        printf("sys_restore: ERROR file '%s' not found\n", path);
+        end_op();
+        return -1;
+    }
+    ilock(ip);
+
+    printf("sys_restore: DEBUG: Successfully opened '%s'\n", path);
+
+  // ================================
+  //        SUB-03 / SUB-04 / SUB-05
+  // ================================
+
+  uint off = 0;
+  int ret = -1;
+  uint64 sz;
+  struct trapframe tf;
+
+  struct proc *p = myproc();
+
+  // --- SUB 03: đọc header ---
+  if(readi(ip, 0, (uint64)&sz, off, sizeof(sz)) != sizeof(sz)){
+    printf("sys_restore: ERROR reading size\n");
+    goto bad;
+  }
+  off += sizeof(sz);
+
+  if(readi(ip, 0, (uint64)&tf, off, sizeof(tf)) != sizeof(tf)){
+    printf("sys_restore: ERROR reading trapframe\n");
+    goto bad;
+  }
+  off += sizeof(tf);
+
+  // --- SUB 04: giải phóng pagetable cũ và tạo pagetable mới ---
+
+  // free old memory if exists
+  if(p->sz > 0) {
+    uvmfree(p->pagetable, p->sz);
+    p->sz = 0;
   }
 
-  // 2. Start a file system transaction (required for namei/ilock)
-  begin_op();
-
-  // 3. Find the file (inode) by name
-  if((ip = namei(path)) == 0){
-    printf("sys_restore: ERROR file '%s' not found\n", path);
-    end_op();
-    return -1;
+  pagetable_t newpt = uvmcreate();
+  if(newpt == 0){
+    printf("sys_restore: ERROR uvmcreate failed\n");
+    goto bad;
   }
 
-  // 4. Lock the inode so we can read from it
-  ilock(ip);
+  // allocate new memory
+if (uvmalloc(newpt, 0, sz, 1) != sz) {
+    printf("sys_restore: ERROR uvmalloc failed\n");
+    uvmfree(newpt, sz);
+    goto bad;
+  }
 
-  // 5. TODO: Read and restore the process header
-  printf("sys_restore: DEBUG: Successfully opened '%s', size=%d bytes\n", path, ip->size);
+  p->pagetable = newpt;
+  p->sz = sz;
 
-  // 6. Cleanup: Unlock and release the inode, then end transaction
+  // --- SUB 05: đọc nội dung bộ nhớ từ file vào từng trang ---
+
+  uint64 remaining = sz;
+  for(uint64 va = 0; va < sz; va += PGSIZE){
+    uint64 pa = walkaddr(p->pagetable, va);
+    if(pa == 0){
+      printf("sys_restore: ERROR walkaddr failed at va=0x%lx\n", va);
+      goto bad;
+    }
+
+    int n = (remaining >= PGSIZE) ? PGSIZE : remaining;
+
+    if(readi(ip, 0, (uint64)pa, off, n) != n){
+      printf("sys_restore: ERROR reading memory chunk at va=0x%lx\n", va);
+      goto bad;
+    }
+
+    if(n < PGSIZE){
+      memset((void*)(pa + n), 0, PGSIZE - n);
+    }
+
+    off += n;
+    remaining -= n;
+  }
+
+  // restore trapframe + fix return value
+  *(p->trapframe) = tf;
+  p->trapframe->a0 = 0;   // restore returns 0
+
+  ret = 0;
+
+bad:
   iunlockput(ip);
   end_op();
-
-  return 0;
+  return ret;
 }
