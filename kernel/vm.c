@@ -484,3 +484,39 @@ ismapped(pagetable_t pagetable, uint64 va)
   }
   return 0;
 }
+
+// SUB-04 / SUB-05: dump user memory to file
+int
+vm_dump_memory(pagetable_t pagetable, uint64 sz,
+               struct inode *ip, uint *off)
+{
+  char *zeropage = kalloc();
+  if(zeropage == 0)
+    return -1;
+
+  memset(zeropage, 0, PGSIZE);
+
+  for(uint64 va = 0; va < sz; va += PGSIZE){
+    uint64 pa = walkaddr(pagetable, va);
+
+    int n = PGSIZE;
+    if(va + n > sz)
+      n = sz - va;
+
+    uint64 src;
+    if(pa == 0)
+      src = (uint64)zeropage;
+    else
+      src = pa;
+
+    if(writei(ip, 0, src, *off, n) != n){
+      kfree(zeropage);
+      return -1;
+    }
+
+    *off += n;
+  }
+
+  kfree(zeropage);
+  return 0;
+}

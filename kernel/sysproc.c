@@ -11,6 +11,11 @@
 #include "kernel/sleeplock.h"
 #include "kernel/file.h"
 #include "kernel/fcntl.h"
+
+// helper ở vm.c (SUB-04 / SUB-05)
+int vm_dump_memory(pagetable_t pagetable, uint64 sz,
+                   struct inode *ip, uint *off);
+
 uint64
 sys_exit(void)
 {
@@ -183,38 +188,17 @@ sys_checkpoint(void)
     goto bad;
   }
   off += sizeof(tf);
-
-  // 7. Write Memory
-  for(uint64 i = 0; i < sz; i += PGSIZE){
-    uint64 pa = walkaddr(p->pagetable, i);
-    
-    int n = PGSIZE;
-    if(i + n > sz){
-      n = sz - i;
-    }
-
-    uint64 src_addr;
-    if(pa == 0){
-      src_addr = (uint64)zeropage;
-    } else {
-      src_addr = pa;
-    }
-
-    if(writei(ip, 0, src_addr, off, n) != n){
-      // FIXED LINE BELOW: changed %x to %lx
-      printf("sys_checkpoint: ERROR: write memory failed at addr 0x%lx\n", i);
-      goto bad;
-    }
-    off += n;
+    if(vm_dump_memory(p->pagetable, sz, ip, &off) < 0){
+    printf("sys_checkpoint: ERROR dump memory\n");
+    goto bad;
   }
 
-  printf("sys_checkpoint: DEBUG: Wrote %d bytes (state + memory) to %s\n", off, filename);
+  printf("sys_checkpoint: checkpointed %d bytes to %s\n", off, filename);
   ret = 0;
 
 bad:
   iunlockput(ip);
   end_op();
-  kfree(zeropage);
   return ret;
 }
 // In kernel/sysproc.c

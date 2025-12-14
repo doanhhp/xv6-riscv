@@ -173,6 +173,9 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
+int vm_dump_memory(pagetable_t, uint64, struct inode*, uint*);
+
+
 
 // plic.c
 void            plicinit(void);

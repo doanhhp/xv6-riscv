@@ -147,6 +147,8 @@ UPROGS=\
 	$U/_checkpointtest\
 	$U/_restoretest\
 	$U/_chkpt\
+	$U/_restart\
+	$U/_victim\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
