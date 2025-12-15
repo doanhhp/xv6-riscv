@@ -15,7 +15,5 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-  // Nếu restore thành công, tiến trình mới sẽ chạy
-  // Không nên quay lại đây
   exit(0);
 }
