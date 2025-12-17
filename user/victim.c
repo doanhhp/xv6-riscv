@@ -7,10 +7,15 @@ main(void)
 {
   int i = 0;
 
+  printf("victim started. initial pid = %d\n", getpid());
+
   while(1){
-    printf("victim counter = %d\n", i);
+
+    printf("victim (pid %d): counter = %d\n", getpid(), i);
+    
     i++;
-    pause(10);
+    
+    pause(100);
   }
 
   exit(0);
