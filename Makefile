@@ -149,6 +149,8 @@ UPROGS=\
 	$U/_chkpt\
 	$U/_restart\
 	$U/_victim\
+	$U/_bench\
+	$U/__integrity\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
