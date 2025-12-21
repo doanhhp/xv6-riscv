@@ -150,7 +150,7 @@ UPROGS=\
 	$U/_restart\
 	$U/_victim\
 	$U/_bench\
-	$U/__integrity\
+	$U/_integrity\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

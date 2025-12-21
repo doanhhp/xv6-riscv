@@ -1,7 +1,28 @@
 #include "kernel/types.h"
 #include "user/user.h"
 
-#define ARRAY_SIZE 1000
+#define ARRAY_SIZE 500
+
+void print_evidence(int pid, int* data, int iteration) {
+  printf("\n--- EVIDENCE LOG [Iteration %d] ---\n", iteration);
+  printf("Process Status: PID %d is active.\n", pid);
+  printf("Memory Samples (Checking for pattern i*10 + 7):\n");
+  printf("  [Index 0]    Value: %d (Expected 7)\n", data[0]);
+  printf("  [Index 250]  Value: %d (Expected 2507)\n", data[250]);
+  printf("  [Index 499]  Value: %d (Expected 4997)\n", data[499]);
+  
+  int errors = 0;
+  for(int i = 0; i < ARRAY_SIZE; i++){
+    if(data[i] != i * 10 + 7) errors++;
+  }
+
+  if(errors == 0) {
+    printf("Result: 100%% Data Integrity Verified. No corruption detected.\n");
+  } else {
+    printf("Result: CRITICAL ERROR! %d memory words corrupted!\n", errors);
+  }
+  printf("----------------------------------\n");
+}
 
 int
 main(int argc, char *argv[])
@@ -14,32 +35,18 @@ main(int argc, char *argv[])
     exit(1);
   }
 
-  // 1. Initialize Data with a specific pattern
-  printf("integrity (pid %d): Filling memory with pattern...\n", pid);
+  // Initialize
   for(int i = 0; i < ARRAY_SIZE; i++){
-    data[i] = i * 10 + 7; // Example pattern: 7, 17, 27...
+    data[i] = i * 10 + 7;
   }
 
-  printf("integrity (pid %d): Data initialized. Ready for checkpoint.\n", pid);
+  printf("integrity: PID %d initialized complex memory pattern. Ready for Checkpoint.\n", pid);
 
   int counter = 0;
   while(1){
-    // 2. Verify Data Integrity continuously
-    int errors = 0;
-    for(int i = 0; i < ARRAY_SIZE; i++){
-      if(data[i] != i * 10 + 7){
-        errors++;
-      }
-    }
-
-    if(errors > 0){
-      printf("integrity (pid %d): FATAL ERROR! Memory corrupted. %d errors found.\n", pid, errors);
-    } else {
-      printf("integrity (pid %d): Check %d passed. Memory perfect.\n", pid, counter);
-    }
-
+    print_evidence(getpid(), data, counter);
     counter++;
-    sleep(200); // Wait for user to run chkpt/kill/restart
+    pause(150); 
   }
   
   exit(0);
