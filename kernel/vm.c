@@ -520,3 +520,88 @@ vm_dump_memory(pagetable_t pagetable, uint64 sz,
   kfree(zeropage);
   return 0;
 }
+
+// =================================================================
+// CHECKPOINT & RESTORE HELPERS (vm-level memory I/O)
+// =================================================================
+
+// Dump tp's user memory [0, sz) to ip starting at *off.
+// Writes are done in per-page transactions to avoid log overflow.
+// Copies are done under tp->lock; disk I/O is done without holding tp->lock.
+// ip must remain referenced for the duration of this call (it may be unlocked).
+// Returns 0 on success, -1 on failure.
+int
+vm_dump_proc_mem(struct proc *tp, int target_pid, struct inode *ip, uint *off, uint64 sz)
+{
+  char *pagebuf = kalloc();
+  if(pagebuf == 0)
+    return -1;
+
+  uint64 addr = 0;
+  while(addr < sz){
+    uint chunk = PGSIZE;
+    if(addr + chunk > sz)
+      chunk = (uint)(sz - addr);
+
+    // Copy under proc lock
+    acquire(&tp->lock);
+
+    if(tp->pid != target_pid || tp->state == UNUSED || tp->state == ZOMBIE){
+      release(&tp->lock);
+      kfree(pagebuf);
+      return -1;
+    }
+
+    uint64 pa = walkaddr(tp->pagetable, addr);
+    if(pa == 0){
+      memset(pagebuf, 0, chunk);
+    } else {
+      memmove(pagebuf, (void*)pa, chunk);
+    }
+
+    release(&tp->lock);
+
+    // Disk I/O outside proc lock; per-page transaction keeps log safe
+    begin_op();
+    ilock(ip);
+    int n = writei(ip, 0, (uint64)pagebuf, *off, chunk);
+    iunlock(ip);
+    end_op();
+
+    if(n != chunk){
+      kfree(pagebuf);
+      return -1;
+    }
+
+    *off += chunk;
+    addr += chunk;
+  }
+
+  kfree(pagebuf);
+  return 0;
+}
+
+// Load user memory bytes [0, sz) from ip starting at *off into pagetable.
+// ip is expected to be locked by the caller (restore keeps it locked).
+// Returns 0 on success, -1 on failure.
+int
+vm_load_pagetable_from_inode(pagetable_t pagetable, struct inode *ip, uint *off, uint64 sz)
+{
+  uint64 addr = 0;
+  while(addr < sz){
+    uint chunk = PGSIZE;
+    if(addr + chunk > sz)
+      chunk = (uint)(sz - addr);
+
+    uint64 pa = walkaddr(pagetable, addr);
+    if(pa == 0)
+      return -1;
+
+    if(readi(ip, 0, pa, *off, chunk) != chunk)
+      return -1;
+
+    *off += chunk;
+    addr += chunk;
+  }
+  return 0;
+}

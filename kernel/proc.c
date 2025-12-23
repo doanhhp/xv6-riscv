@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "stat.h"
+#include "fs.h"
 
 struct cpu cpus[NCPU];
 
@@ -705,4 +707,217 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// =================================================================
+// CHECKPOINT & RESTORE HELPERS (proc-level orchestration)
+// =================================================================
+
+struct chkpt_header {
+  int pid;
+  uint64 sz;       // exact size in bytes
+  char name[16];
+};
+
+static int
+chkpt_valid_usersz(uint64 sz)
+{
+  // User memory must stay below TRAPFRAME in xv6-riscv.
+  if(sz > TRAPFRAME)
+    return 0;
+  uint64 a = PGROUNDUP(sz);
+  if(a < sz)
+    return 0;
+  if(a > TRAPFRAME)
+    return 0;
+  return 1;
+}
+
+// Checkpoint target_pid into filename.
+// Returns 0 on success, -1 on failure.
+int
+proc_checkpoint(int target_pid, char *filename)
+{
+  struct proc *p, *tp = 0;
+  struct inode *ip = 0;
+  struct chkpt_header h;
+  struct trapframe tf_copy;
+
+  // Find target and snapshot header + trapframe quickly.
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == target_pid && p->state != UNUSED){
+      if(p->state == ZOMBIE){
+        release(&p->lock);
+        return -1;
+      }
+      tp = p;
+
+      h.pid = tp->pid;
+      h.sz  = tp->sz;
+      safestrcpy(h.name, tp->name, sizeof(h.name));
+
+      if(!chkpt_valid_usersz(h.sz)){
+        release(&tp->lock);
+        return -1;
+      }
+
+      // trapframe is kernel memory (kalloc'd) in standard xv6-riscv
+      if(tp->trapframe)
+        memmove(&tf_copy, tp->trapframe, sizeof(tf_copy));
+      else
+        memset(&tf_copy, 0, sizeof(tf_copy));
+
+      release(&tp->lock);
+      break;
+    }
+    release(&p->lock);
+  }
+
+  if(tp == 0)
+    return -1;
+
+  // Create file + write header and trapframe.
+  begin_op();
+  ip = create(filename, T_FILE, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+  // create() returns LOCKED inode.
+
+  uint off = 0;
+  if(writei(ip, 0, (uint64)&h, off, sizeof(h)) != sizeof(h))
+    goto fail_locked_inode;
+  off += sizeof(h);
+
+  if(writei(ip, 0, (uint64)&tf_copy, off, sizeof(tf_copy)) != sizeof(tf_copy))
+    goto fail_locked_inode;
+  off += sizeof(tf_copy);
+
+  iunlock(ip);
+  end_op();
+
+  // Dump user memory (per-page transactions; no proc lock during disk I/O)
+  if(vm_dump_proc_mem(tp, target_pid, ip, &off, h.sz) < 0)
+    goto fail_unlocked_inode;
+
+  // Close inode reference
+  begin_op();
+  ilock(ip);
+  iunlockput(ip);
+  end_op();
+
+  printf("chkpt: Saved process %d to %s\n", h.pid, filename);
+  return 0;
+
+fail_locked_inode:
+  iunlockput(ip);
+  end_op();
+  return -1;
+
+fail_unlocked_inode:
+  if(ip){
+    begin_op();
+    ilock(ip);
+    iunlockput(ip);
+    end_op();
+  }
+  return -1;
+}
+
+// Restore current process from checkpoint file at path.
+// Returns 0 on success, -1 on failure.
+int
+proc_restore(char *path)
+{
+  struct proc *p = myproc();
+  struct chkpt_header h;
+  struct inode *ip = 0;
+  struct trapframe tf_disk;
+
+  ip = namei(path);
+  if(ip == 0){
+    printf("restore: file not found\n");
+    return -1;
+  }
+  ilock(ip);
+
+  // Read header
+  if(readi(ip, 0, (uint64)&h, 0, sizeof(h)) != sizeof(h)){
+    printf("restore: read header failed\n");
+    goto bad_locked;
+  }
+  if(!chkpt_valid_usersz(h.sz)){
+    printf("restore: invalid sz\n");
+    goto bad_locked;
+  }
+
+  // Read trapframe image into temp (so we can fail safely before overwriting)
+  uint off = sizeof(h);
+  if(readi(ip, 0, (uint64)&tf_disk, off, sizeof(tf_disk)) != sizeof(tf_disk)){
+    printf("restore: read trapframe failed\n");
+    goto bad_locked;
+  }
+  off += sizeof(tf_disk);
+
+  uint64 sz_aligned = PGROUNDUP(h.sz);
+
+  // Build new page table first so failures don't destroy current process.
+  pagetable_t oldpt = p->pagetable;
+  uint64 oldsz = p->sz;
+
+  pagetable_t newpt = proc_pagetable(p);
+  if(newpt == 0){
+    printf("restore: proc_pagetable failed\n");
+    goto bad_locked;
+  }
+
+  if(sz_aligned > 0){
+    if(uvmalloc(newpt, 0, sz_aligned, PTE_R | PTE_W | PTE_X | PTE_U) == 0){
+      printf("restore: uvmalloc failed\n");
+      proc_freepagetable(newpt, 0);
+      goto bad_locked;
+    }
+  }
+
+  // Load memory bytes directly into pages of newpt (inode is locked here)
+  if(vm_load_pagetable_from_inode(newpt, ip, &off, h.sz) < 0){
+    printf("restore: load memory failed\n");
+    proc_freepagetable(newpt, sz_aligned);
+    goto bad_locked;
+  }
+
+  iunlockput(ip);
+  ip = 0;
+
+  // Swap in new address space
+  proc_freepagetable(oldpt, oldsz);
+  p->pagetable = newpt;
+  p->sz = h.sz;
+
+  // Install trapframe, preserving kernel-only fields
+  uint64 k_satp   = p->trapframe->kernel_satp;
+  uint64 k_sp     = p->trapframe->kernel_sp;
+  uint64 k_trap   = p->trapframe->kernel_trap;
+  uint64 k_hartid = p->trapframe->kernel_hartid;
+
+  memmove(p->trapframe, &tf_disk, sizeof(tf_disk));
+
+  p->trapframe->kernel_satp   = k_satp;
+  p->trapframe->kernel_sp     = k_sp;
+  p->trapframe->kernel_trap   = k_trap;
+  p->trapframe->kernel_hartid = k_hartid;
+
+  // Final state fixes
+  safestrcpy(p->name, h.name, sizeof(p->name));
+  p->killed = 0;
+  p->trapframe->a0 = 0; // restore() returns 0
+
+  return 0;
+
+bad_locked:
+  if(ip)
+    iunlockput(ip);
+  return -1;
 }

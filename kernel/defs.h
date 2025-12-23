@@ -106,6 +106,9 @@ uint64          sys_hello(void);
 uint64          sys_checkpoint(void);
 uint64          sys_restore(void);
 struct proc* findproc(int pid);
+int             proc_checkpoint(int, char *);
+int             proc_restore(char *);
+
 // swtch.S
 void            swtch(struct context*, struct context*);
 
@@ -173,7 +176,9 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 int             ismapped(pagetable_t, uint64);
 uint64          vmfault(pagetable_t, uint64, int);
-int vm_dump_memory(pagetable_t, uint64, struct inode*, uint*);
+int             vm_dump_memory(pagetable_t, uint64, struct inode*, uint*);
+int             vm_dump_proc_mem(struct proc*, int, struct inode*, uint*, uint64);
+int             vm_load_pagetable_from_inode(pagetable_t, struct inode*, uint*, uint64);
 
 
 
