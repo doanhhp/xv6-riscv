@@ -151,6 +151,7 @@ UPROGS=\
 	$U/_victim\
 	$U/_bench\
 	$U/_integrity\
+	$U/_sectest\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

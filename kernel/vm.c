@@ -605,3 +605,86 @@ vm_load_pagetable_from_inode(pagetable_t pagetable, struct inode *ip, uint *off,
   }
   return 0;
 }
+
+// =================================================================
+// OPTIMIZATION C: INTEGRITY PROTECTION (Chapter 7)
+// =================================================================
+
+// Simple Checksum (Summation)
+uint32
+calc_checksum(char *buf, uint64 len)
+{
+  uint32 sum = 0;
+  for(int i = 0; i < len; i++){
+    sum += (uint8)buf[i];
+  }
+  return sum;
+}
+
+// Dump memory: Calculates checksum while writing (No Encryption)
+int
+vm_dump_integrity(struct proc *tp, struct inode *ip, uint *off, uint64 sz, uint32 *crc)
+{
+  char *page_buf = kalloc();
+  if(page_buf == 0) return -1;
+
+  for(uint64 va = 0; va < sz; va += PGSIZE){
+    uint64 pa = walkaddr(tp->pagetable, va);
+    
+    // If page exists, copy it. If not, write zeros.
+    if(pa == 0)
+      memset(page_buf, 0, PGSIZE);
+    else
+      memmove(page_buf, (void*)pa, PGSIZE);
+
+    // 1. Update Checksum
+    *crc += calc_checksum(page_buf, PGSIZE);
+
+    // 2. Write to Disk (Plaintext)
+    begin_op();
+    ilock(ip);
+    if(writei(ip, 0, (uint64)page_buf, *off, PGSIZE) != PGSIZE){
+      iunlock(ip);
+      end_op();
+      kfree(page_buf);
+      return -1;
+    }
+    iunlock(ip);
+    end_op();
+
+    *off += PGSIZE;
+  }
+
+  kfree(page_buf);
+  return 0;
+}
+
+// Restore memory: Verifies checksum while reading
+int
+vm_restore_integrity(pagetable_t pagetable, struct inode *ip, uint *off, uint64 sz, uint32 *crc)
+{
+  char *page_buf = kalloc();
+  if(page_buf == 0) return -1;
+
+  for(uint64 va = 0; va < sz; va += PGSIZE){
+    uint64 pa = walkaddr(pagetable, va); // Allocated by uvmalloc
+    if(pa == 0) { kfree(page_buf); return -1; }
+
+    // 1. Read from Disk
+    if(readi(ip, 0, (uint64)page_buf, *off, PGSIZE) != PGSIZE){
+      kfree(page_buf);
+      return -1;
+    }
+
+    // 2. Update Checksum (Calculate what is on disk)
+    *crc += calc_checksum(page_buf, PGSIZE);
+
+    // 3. Copy to User Memory
+    memmove((void*)pa, page_buf, PGSIZE);
+
+    *off += PGSIZE;
+  }
+
+  kfree(page_buf);
+  return 0;
+}
