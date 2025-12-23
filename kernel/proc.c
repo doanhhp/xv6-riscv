@@ -742,33 +742,14 @@ proc_checkpoint(int target_pid, char *filename)
   struct inode *ip = 0;
   struct chkpt_header h;
   struct trapframe tf_copy;
+  int frozen_wait_cycles = 0;
 
-  // Find target and snapshot header + trapframe quickly.
+  // 1. Find target process and FREEZE it (Chapter 2: Safe State)
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
-    if(p->pid == target_pid && p->state != UNUSED){
-      if(p->state == ZOMBIE){
-        release(&p->lock);
-        return -1;
-      }
+    if(p->pid == target_pid){
       tp = p;
-
-      h.pid = tp->pid;
-      h.sz  = tp->sz;
-      safestrcpy(h.name, tp->name, sizeof(h.name));
-
-      if(!chkpt_valid_usersz(h.sz)){
-        release(&tp->lock);
-        return -1;
-      }
-
-      // trapframe is kernel memory (kalloc'd) in standard xv6-riscv
-      if(tp->trapframe)
-        memmove(&tf_copy, tp->trapframe, sizeof(tf_copy));
-      else
-        memset(&tf_copy, 0, sizeof(tf_copy));
-
-      release(&tp->lock);
+      // Hold the lock to prevent state changes!
       break;
     }
     release(&p->lock);
@@ -777,15 +758,52 @@ proc_checkpoint(int target_pid, char *filename)
   if(tp == 0)
     return -1;
 
-  // Create file + write header and trapframe.
+  // 2. Wait for RUNNING process to yield (Race Condition Avoidance)
+  // If it's running on another core, memory is changing. Wait for deschedule.
+  while(tp->state == RUNNING){
+    release(&tp->lock);
+    yield(); // Allow context switch
+    frozen_wait_cycles++;
+    acquire(&tp->lock);
+  }
+
+  // Process is now locked and NOT running.
+  if(tp->state == UNUSED || tp->state == ZOMBIE){
+    release(&tp->lock);
+    return -1;
+  }
+
+  // 3. Capture Metadata & Registers (Atomic Copy)
+  h.pid = tp->pid;
+  h.sz  = tp->sz;
+  safestrcpy(h.name, tp->name, sizeof(h.name));
+
+  if(!chkpt_valid_usersz(h.sz)){
+    release(&tp->lock);
+    return -1;
+  }
+
+  if(tp->trapframe)
+    memmove(&tf_copy, tp->trapframe, sizeof(tf_copy));
+  else
+    memset(&tf_copy, 0, sizeof(tf_copy));
+
+  // 4. Soft Freeze for Disk I/O
+  // We cannot hold p->lock during disk writes (sleepable).
+  // We set state to SLEEPING so scheduler ignores it, effectively freezing it.
+  int old_state = tp->state;
+  tp->state = SLEEPING;
+  release(&tp->lock);
+
+  // --- BEGIN DISK I/O SECTION (No Spinlocks Held) ---
+
   begin_op();
   ip = create(filename, T_FILE, 0, 0);
   if(ip == 0){
     end_op();
-    return -1;
+    goto fail_thaw; // Restore state on failure
   }
-  // create() returns LOCKED inode.
-
+  
   uint off = 0;
   if(writei(ip, 0, (uint64)&h, off, sizeof(h)) != sizeof(h))
     goto fail_locked_inode;
@@ -798,7 +816,7 @@ proc_checkpoint(int target_pid, char *filename)
   iunlock(ip);
   end_op();
 
-  // Dump user memory (per-page transactions; no proc lock during disk I/O)
+  // Dump user memory (Using vm.c helper)
   if(vm_dump_proc_mem(tp, target_pid, ip, &off, h.sz) < 0)
     goto fail_unlocked_inode;
 
@@ -808,13 +826,20 @@ proc_checkpoint(int target_pid, char *filename)
   iunlockput(ip);
   end_op();
 
-  printf("chkpt: Saved process %d to %s\n", h.pid, filename);
+  // --- END DISK I/O SECTION ---
+
+  // 5. Thaw Process (Restore original state)
+  acquire(&tp->lock);
+  tp->state = old_state;
+  release(&tp->lock);
+
+  printf("chkpt: Saved process %d to %s (Frozen %d cycles)\n", h.pid, filename, frozen_wait_cycles);
   return 0;
 
 fail_locked_inode:
   iunlockput(ip);
   end_op();
-  return -1;
+  goto fail_thaw;
 
 fail_unlocked_inode:
   if(ip){
@@ -823,6 +848,12 @@ fail_unlocked_inode:
     iunlockput(ip);
     end_op();
   }
+  // Fallthrough to thaw
+
+fail_thaw:
+  acquire(&tp->lock);
+  tp->state = old_state; // Always restore state!
+  release(&tp->lock);
   return -1;
 }
 
@@ -853,7 +884,7 @@ proc_restore(char *path)
     goto bad_locked;
   }
 
-  // Read trapframe image into temp (so we can fail safely before overwriting)
+  // Read trapframe image
   uint off = sizeof(h);
   if(readi(ip, 0, (uint64)&tf_disk, off, sizeof(tf_disk)) != sizeof(tf_disk)){
     printf("restore: read trapframe failed\n");
@@ -881,7 +912,7 @@ proc_restore(char *path)
     }
   }
 
-  // Load memory bytes directly into pages of newpt (inode is locked here)
+  // Load memory bytes directly into pages of newpt
   if(vm_load_pagetable_from_inode(newpt, ip, &off, h.sz) < 0){
     printf("restore: load memory failed\n");
     proc_freepagetable(newpt, sz_aligned);
