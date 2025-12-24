@@ -1,0 +1,55 @@
+#!/usr/bin/expect -f
+log_file -noappend autotest_lazy.log
+set timeout 60
+
+spawn make qemu
+
+# chờ boot
+sleep 3
+
+# chạy test
+send "test_ckpt_lazy\r"
+
+# bắt PID
+expect {
+    -re {TEST: PID=([0-9]+)} {
+        set pid $expect_out(1,string)
+        puts "AUTOTEST: PID=$pid"
+    }
+    timeout {
+        puts "AUTOTEST: FAIL (no PID)"
+        exit 1
+    }
+}
+
+# chờ ổn định
+sleep 2
+
+# checkpoint
+send "chkpt $pid snap_lazy.dat\r"
+puts "AUTOTEST: checkpoint issued"
+
+sleep 1
+
+# kill process gốc
+send "kill $pid\r"
+puts "AUTOTEST: process killed"
+
+sleep 1
+
+# restore
+send "restart snap_lazy.dat\r"
+puts "AUTOTEST: restart issued"
+
+# xác nhận page fault sau restore
+expect {
+    -re {=== AFTER RESTART ===} {
+        puts "AUTOTEST: CONFIRMED AFTER RESTART"
+        puts "AUTOTEST: RESULT=PASS"
+        exit 0
+    }
+    timeout {
+        puts "AUTOTEST: FAIL (no after-restart marker)"
+        exit 2
+    }
+}

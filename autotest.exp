@@ -1,0 +1,55 @@
+#!/usr/bin/expect -f
+log_file -noappend autotest.log
+set timeout 60
+
+spawn make qemu
+
+# chờ xv6 boot
+sleep 3
+
+# chạy test
+send "test_ckpt_auto\r"
+
+# bắt PID
+expect {
+    -re {TEST: PID=([0-9]+)} {
+        set pid $expect_out(1,string)
+        puts "AUTOTEST: PID=$pid"
+    }
+    timeout {
+        puts "AUTOTEST: FAIL (no PID)"
+        exit 1
+    }
+}
+
+# chờ ~10 vòng
+sleep 2
+
+# checkpoint
+send "chkpt $pid snap.dat\r"
+puts "AUTOTEST: checkpoint issued"
+
+sleep 1
+
+# KILL PROCESS CŨ (CỰC KỲ QUAN TRỌNG)
+send "kill $pid\r"
+puts "AUTOTEST: process killed"
+
+sleep 1
+
+# RESTORE
+send "restart snap.dat\r"
+puts "AUTOTEST: restart issued"
+
+# PHẢI NHÌN THẤY DẤU MỐC SAU RESTART
+expect {
+    -re {=== AFTER RESTART ===} {
+        puts "AUTOTEST: CONFIRMED AFTER RESTART"
+        puts "AUTOTEST: RESULT=PASS"
+        exit 0
+    }
+    timeout {
+        puts "AUTOTEST: FAIL (no after-restart marker)"
+        exit 2
+    }
+}

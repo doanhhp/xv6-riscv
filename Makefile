@@ -149,6 +149,8 @@ UPROGS=\
 	$U/_chkpt\
 	$U/_restart\
 	$U/_victim\
+	$U/_test_ckpt_auto\
+	$U/_test_ckpt_lazy\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)
