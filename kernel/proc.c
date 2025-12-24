@@ -5,6 +5,8 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "stat.h"
+#include "fs.h"
 
 struct cpu cpus[NCPU];
 
@@ -705,4 +707,267 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// =================================================================
+// CHECKPOINT & RESTORE HELPERS (proc-level orchestration)
+// =================================================================
+
+#define CHKPT_MAGIC 0x58563643 // ASCII for "XV6C"
+
+struct chkpt_header {
+  uint magic;      //  File Type Signature
+  int pid;
+  uint64 sz;
+  uint32 checksum; //  Data Integrity Checksum
+  char name[16];
+};
+static int
+chkpt_valid_usersz(uint64 sz)
+{
+  // User memory must stay below TRAPFRAME in xv6-riscv.
+  if(sz > TRAPFRAME)
+    return 0;
+  uint64 a = PGROUNDUP(sz);
+  if(a < sz)
+    return 0;
+  if(a > TRAPFRAME)
+    return 0;
+  return 1;
+}
+
+// Checkpoint target_pid into filename.
+// Returns 0 on success, -1 on failure.
+int
+proc_checkpoint(int target_pid, char *filename)
+{
+  struct proc *p, *tp = 0;
+  struct inode *ip = 0;
+  struct chkpt_header h;
+  struct trapframe tf_copy;
+  int frozen_wait_cycles = 0;
+
+  // 1. Find target process & Freeze (Option E Logic)
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == target_pid){
+      tp = p;
+      break; 
+    }
+    release(&p->lock);
+  }
+
+  if(tp == 0) return -1;
+
+  // Wait for RUNNING process to yield (Race Condition Avoidance)
+  while(tp->state == RUNNING){
+    release(&tp->lock);
+    yield();
+    frozen_wait_cycles++;
+    acquire(&tp->lock);
+  }
+
+  if(tp->state == UNUSED || tp->state == ZOMBIE){
+    release(&tp->lock);
+    return -1;
+  }
+
+  // 2. Prepare Header (Set Magic & Placeholder Checksum)
+  h.magic = CHKPT_MAGIC;  // [NEW] Set Signature
+  h.pid = tp->pid;
+  h.sz  = tp->sz;
+  h.checksum = 0;         // Will be calculated during dump
+  safestrcpy(h.name, tp->name, sizeof(h.name));
+
+  if(!chkpt_valid_usersz(h.sz)){
+    release(&tp->lock);
+    return -1;
+  }
+
+  if(tp->trapframe)
+    memmove(&tf_copy, tp->trapframe, sizeof(tf_copy));
+  else
+    memset(&tf_copy, 0, sizeof(tf_copy));
+
+  // 3. Soft Freeze
+  int old_state = tp->state;
+  tp->state = SLEEPING;
+  release(&tp->lock);
+
+  // --- DISK I/O START ---
+  begin_op();
+  ip = create(filename, T_FILE, 0, 0);
+  if(ip == 0){
+    end_op();
+    goto fail_thaw;
+  }
+  
+  uint off = 0;
+  // Write Header (Placeholder)
+  if(writei(ip, 0, (uint64)&h, off, sizeof(h)) != sizeof(h)) goto fail_locked;
+  off += sizeof(h);
+
+  // Write Trapframe
+  if(writei(ip, 0, (uint64)&tf_copy, off, sizeof(tf_copy)) != sizeof(tf_copy)) goto fail_locked;
+  off += sizeof(tf_copy);
+
+  iunlock(ip);
+  end_op();
+
+  // 4. Dump Memory & Calculate Checksum (Option C Logic)
+  uint32 data_crc = 0;
+  if(vm_dump_integrity(tp, ip, &off, h.sz, &data_crc) < 0)
+    goto fail_unlocked;
+
+  // 5. Update Header with Final Checksum
+  h.checksum = data_crc;
+
+  begin_op();
+  ilock(ip);
+  // Rewrite header at offset 0
+  if(writei(ip, 0, (uint64)&h, 0, sizeof(h)) != sizeof(h)) {
+    // If updating header fails, the file is corrupt.
+    iunlock(ip);
+    end_op();
+    goto fail_thaw;
+  }
+  iunlockput(ip);
+  end_op();
+  // --- DISK I/O END ---
+
+  // Thaw
+  acquire(&tp->lock);
+  tp->state = old_state;
+  release(&tp->lock);
+
+  printf("chkpt: Saved process %d (Magic: %x, Checksum: %x)\n", h.pid, h.magic, h.checksum);
+  return 0;
+
+fail_locked:
+  iunlockput(ip);
+  end_op();
+  goto fail_thaw;
+
+fail_unlocked:
+  if(ip){
+    begin_op();
+    ilock(ip);
+    iunlockput(ip);
+    end_op();
+  }
+
+fail_thaw:
+  acquire(&tp->lock);
+  tp->state = old_state;
+  release(&tp->lock);
+  return -1;
+}
+
+// Restore current process from checkpoint file
+int
+proc_restore(char *path)
+{
+  struct proc *p = myproc();
+  struct chkpt_header h;
+  struct inode *ip = 0;
+  struct trapframe tf_disk;
+
+  ip = namei(path);
+  if(ip == 0){
+    printf("restore: file not found\n");
+    return -1;
+  }
+  ilock(ip);
+
+  // 1. Read Header
+  if(readi(ip, 0, (uint64)&h, 0, sizeof(h)) != sizeof(h)){
+    printf("restore: read header failed\n");
+    goto bad_locked;
+  }
+
+  // 2. [NEW] Verify Magic Number (Safety Check)
+  if(h.magic != CHKPT_MAGIC){
+    printf("restore: Error! File is not a valid checkpoint (Bad Magic: %x)\n", h.magic);
+    goto bad_locked;
+  }
+
+  if(!chkpt_valid_usersz(h.sz)){
+    printf("restore: invalid sz\n");
+    goto bad_locked;
+  }
+
+  // 3. Read Trapframe
+  uint off = sizeof(h);
+  if(readi(ip, 0, (uint64)&tf_disk, off, sizeof(tf_disk)) != sizeof(tf_disk)){
+    printf("restore: read trapframe failed\n");
+    goto bad_locked;
+  }
+  off += sizeof(tf_disk);
+
+  // 4. Prepare New Page Table
+  uint64 sz_aligned = PGROUNDUP(h.sz);
+  pagetable_t oldpt = p->pagetable;
+  uint64 oldsz = p->sz;
+
+  pagetable_t newpt = proc_pagetable(p);
+  if(newpt == 0){
+    printf("restore: proc_pagetable failed\n");
+    goto bad_locked;
+  }
+
+  if(sz_aligned > 0){
+    if(uvmalloc(newpt, 0, sz_aligned, PTE_R | PTE_W | PTE_X | PTE_U) == 0){
+      printf("restore: uvmalloc failed\n");
+      proc_freepagetable(newpt, 0);
+      goto bad_locked;
+    }
+  }
+
+  // 5. Restore Memory & Verify Checksum (Option C Logic)
+  uint32 calc_crc = 0;
+  if(vm_restore_integrity(newpt, ip, &off, h.sz, &calc_crc) < 0){
+    printf("restore: load memory failed\n");
+    proc_freepagetable(newpt, sz_aligned);
+    goto bad_locked;
+  }
+
+  iunlockput(ip);
+  ip = 0;
+
+  // 6. [NEW] Compare Checksums
+  if(calc_crc != h.checksum){
+    printf("restore: INTEGRITY ERROR! Data corrupted.\n");
+    printf("Expected: %x, Calculated: %x\n", h.checksum, calc_crc);
+    proc_freepagetable(newpt, sz_aligned);
+    return -1;
+  }
+
+  // Swap in new address space
+  proc_freepagetable(oldpt, oldsz);
+  p->pagetable = newpt;
+  p->sz = h.sz;
+
+  // Install trapframe
+  uint64 k_satp   = p->trapframe->kernel_satp;
+  uint64 k_sp     = p->trapframe->kernel_sp;
+  uint64 k_trap   = p->trapframe->kernel_trap;
+  uint64 k_hartid = p->trapframe->kernel_hartid;
+
+  memmove(p->trapframe, &tf_disk, sizeof(tf_disk));
+
+  p->trapframe->kernel_satp   = k_satp;
+  p->trapframe->kernel_sp     = k_sp;
+  p->trapframe->kernel_trap   = k_trap;
+  p->trapframe->kernel_hartid = k_hartid;
+
+  safestrcpy(p->name, h.name, sizeof(p->name));
+  p->killed = 0;
+  p->trapframe->a0 = 0; 
+
+  printf("restore: Integrity Verified. Magic OK.\n");
+  return 0;
+
+bad_locked:
+  if(ip) iunlockput(ip);
+  return -1;
 }
